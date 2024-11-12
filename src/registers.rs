@@ -42,3 +42,11 @@ pub const TEST_PIN_EN_REG: u8 = 0x33 << 1;     // Enables certain pins to output
 pub const TEST_BUS_REG: u8 = 0x34 << 1;        // Controls the pins output driver (for testing)
 pub const AUTO_TEST_REG: u8 = 0x36 << 1;       // Controls the self-test
 pub const TEST_ADC_REG: u8 = 0x39 << 1;        // Shows the value of ADC I and Q channels
+
+
+// RFID Commands
+pub const REQA: u8 = 0x26; // REQA command to request tag
+pub const SUCCESS: u8 = 0x0A; // Adjust as needed based on the datasheet (assuming as placeholder)
+pub const ANTICOLL: u8 = 0x93;  // Anti-collision command code for 4-byte UID
+pub const TRANSCEIVE: u8 = 0x0C;
+pub const PICC_CMD_SEL_CL1: u8 = 0x93;

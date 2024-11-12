@@ -22,7 +22,7 @@ fn main() -> ! {
             polarity: Polarity::IdleLow,
             phase: Phase::CaptureOnFirstTransition,
         },
-        clock: spi::SerialClockRate::OscfOver128,
+        clock: spi::SerialClockRate::OscfOver64,
     };
 
     let sclk = pins.d13.into_output();
@@ -36,17 +36,22 @@ fn main() -> ! {
     let mut rfid = RfidRc522::new(spi, cs_pin);
     rfid.init(&mut rst, &mut serial); // Pass serial reference to init
 
-    let version = rfid.read_register(&mut serial, registers::VERSION_REG);
-    ufmt::uwriteln!(&mut serial, "Direct version read: 0x{:X}", version).unwrap();
+    // rfid.check_version_loop(&mut serial);
 
-    let command_reg = rfid.read_register(&mut serial, registers::COMMAND_REG);
-    ufmt::uwriteln!(&mut serial, "COMMAND_REG test read: 0x{:X}", command_reg).unwrap();
+    loop {
+        match rfid.detect_tag(&mut serial) {
+            Some(uid) => {
+                ufmt::uwriteln!(&mut serial, "Tag detected with UID: ").ok();
+                for byte in &uid {
+                    ufmt::uwriteln!(&mut serial, "{:02X} ", *byte).ok();
+                }
+                ufmt::uwriteln!(&mut serial, "").ok(); // Newline
+            }
+            None => {
+                ufmt::uwriteln!(&mut serial, "No tag detected").unwrap();
+            }
+        }
 
-    if version == 0x91 || version == 0x92 {
-        ufmt::uwriteln!(&mut serial, "MFRC522 communication is OK").unwrap();
-    } else {
-        ufmt::uwriteln!(&mut serial, "MFRC522 communication error").unwrap();
+        arduino_hal::delay_ms(1000); // Delay between each detection attempt
     }
-
-    loop {}
 }
