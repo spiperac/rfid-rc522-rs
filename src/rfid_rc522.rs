@@ -31,7 +31,7 @@ where
         arduino_hal::delay_ms(50);
     
         let version = self.read_register(serial, VERSION_REG);
-        ufmt::uwriteln!(serial, "Version: 0x{:X}", version).ok();
+        ufmt::uwriteln!(serial, "RFID-RC522 Version: 0x{:X}", version).ok();
     
         // Set up timer and communication parameters
         self.write_register(serial, T_MODE_REG, 0x80);
@@ -50,19 +50,16 @@ where
         // Step 1: Clear any pending interrupts and reset FIFO
         self.write_register(serial, COMM_IRQ_REG, 0x7F);
         self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Clear FIFO buffer
-        ufmt::uwriteln!(serial, "FIFO buffer cleared").ok();
 
         // Step 2: Set BitFramingReg to 0x07 to prepare for REQA
-        self.write_register(serial, BIT_FRAMING_REG, 0x0F); // Try higher framing
+        self.write_register(serial, BIT_FRAMING_REG, 0x07); // Try higher framing
         arduino_hal::delay_ms(5);
 
         // Step 3: Write REQA command to the FIFO
         self.write_register(serial, FIFO_DATA_REG, REQA);
-        ufmt::uwriteln!(serial, "REQA command written to FIFO").ok();
 
         // Step 4: Set to TRANSCEIVE mode
         self.write_register(serial, COMMAND_REG, TRANSCEIVE);
-        ufmt::uwriteln!(serial, "Set to TRANSCEIVE mode").ok();
 
         // Step 5: Start transmission
         self.write_register(serial, BIT_FRAMING_REG, 0x87); // Start transmission
@@ -81,7 +78,7 @@ where
         }
 
         if timeout == 0 {
-            ufmt::uwriteln!(serial, "Timeout waiting for tag after REQA").ok();
+            // ufmt::uwriteln!(serial, "Timeout waiting for tag after REQA").ok();
             return None;
         }
 
@@ -89,7 +86,7 @@ where
         let fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
         ufmt::uwriteln!(serial, "FIFO level after REQA: {}", fifo_level).ok();
 
-        if fifo_level >= 4 {  // Expecting UID bytes in FIFO after REQA
+        if fifo_level >= 2 {  // Expecting UID bytes in FIFO after REQA
             let mut uid = [0u8; 4];
             for (i, byte) in uid.iter_mut().enumerate() {
                 *byte = self.read_register(serial, FIFO_DATA_REG);
@@ -133,7 +130,7 @@ where
         }
     }
 
-    fn write_register<W: uWrite>(&mut self, serial: &mut W, address: u8, value: u8) {
+    fn write_register<W: uWrite>(&mut self, _serial: &mut W, address: u8, value: u8) {
         let buffer = [address & 0x7F, value];
         let mut read_buffer = [0u8; 2];
         self.cs.set_low().ok();
@@ -141,7 +138,7 @@ where
         self.cs.set_high().ok();
     }
 
-    fn read_register<W: uWrite>(&mut self, serial: &mut W, address: u8) -> u8 {
+    fn read_register<W: uWrite>(&mut self, _serial: &mut W, address: u8) -> u8 {
         let buffer = [address | 0x80, 0x00];
         let mut read_buffer = [0u8; 2];
         self.cs.set_low().ok();

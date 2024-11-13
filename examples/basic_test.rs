@@ -48,7 +48,6 @@ fn main() -> ! {
                 ufmt::uwriteln!(&mut serial, "").ok(); // Newline
             }
             None => {
-                ufmt::uwriteln!(&mut serial, "No tag detected").unwrap();
             }
         }
 
