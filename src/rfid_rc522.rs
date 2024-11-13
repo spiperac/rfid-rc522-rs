@@ -33,6 +33,12 @@ where
         let version = self.read_register(serial, VERSION_REG);
         ufmt::uwriteln!(serial, "RFID-RC522 Version: 0x{:X}", version).ok();
     
+        // Reset TxModeReg, RxModeReg, and ModWidthReg
+        self.write_register(serial, TX_MODE_REG, 0x00);
+        self.write_register(serial, RX_MODE_REG, 0x00);
+        self.write_register(serial, MODE_WIDTH_REG, 0x26);
+
+
         // Set up timer and communication parameters
         self.write_register(serial, T_MODE_REG, 0x80);
         self.write_register(serial, T_PRESCALER_REG, 0xA9);
@@ -121,7 +127,75 @@ where
 
         ufmt::uwriteln!(serial, "No valid UID detected after REQA").ok();
         None
-    }        
+    }
+
+    pub fn anticoll<W: ufmt::uWrite>(&mut self, serial: &mut W) -> Option<[u8; 4]> {
+        self.write_register(serial, BIT_FRAMING_REG, 0x00); // Reset framing for anti-collision
+        arduino_hal::delay_ms(50); // Extended delay for processing
+    
+        self.write_register(serial, FIFO_DATA_REG, ANTICOLL);
+        self.write_register(serial, COMMAND_REG, TRANSCEIVE);
+        arduino_hal::delay_ms(5); // Small delay after issuing command
+    
+        // Wait for data in COMM_IRQ_REG or timeout
+        let mut timeout = 100;
+        while timeout > 0 {
+            let irq = self.read_register(serial, COMM_IRQ_REG);
+            if irq & 0x30 != 0 {
+                ufmt::uwriteln!(serial, "Anti-collision data available in COMM_IRQ_REG: 0x{:X}", irq).ok();
+                break;
+            }
+            arduino_hal::delay_ms(1);
+            timeout -= 1;
+        }
+    
+        if timeout == 0 {
+            ufmt::uwriteln!(serial, "Timeout waiting for anti-collision").ok();
+            return None;
+        }
+    
+        // Read FIFO level to check if we received the full UID
+        let fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
+        ufmt::uwriteln!(serial, "FIFO level after anti-collision: {}", fifo_level).ok();
+    
+        if fifo_level >= 4 {
+            let mut uid = [0u8; 4];
+            for (i, byte) in uid.iter_mut().enumerate() {
+                *byte = self.read_register(serial, FIFO_DATA_REG);
+                ufmt::uwriteln!(serial, "Anti-collision UID byte {}: {:02X}", i, *byte).ok();
+            }
+            return Some(uid);
+        } else {
+            ufmt::uwriteln!(serial, "Incomplete anti-collision response; retrying once.").ok();
+        }
+    
+        // Retry logic remains unchanged
+        arduino_hal::delay_ms(5);
+        self.write_register(serial, COMM_IRQ_REG, 0x7F); // Clear interrupt
+        self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Clear FIFO buffer
+    
+        // Repeat anti-collision process
+        self.write_register(serial, FIFO_DATA_REG, ANTICOLL);
+        self.write_register(serial, COMMAND_REG, TRANSCEIVE);
+        arduino_hal::delay_ms(5);
+    
+        let retry_fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
+        ufmt::uwriteln!(serial, "FIFO level after anti-collision retry: {}", retry_fifo_level).ok();
+    
+        if retry_fifo_level >= 4 {
+            let mut uid = [0u8; 4];
+            for (i, byte) in uid.iter_mut().enumerate() {
+                *byte = self.read_register(serial, FIFO_DATA_REG);
+                ufmt::uwriteln!(serial, "Retry anti-collision UID byte {}: {:02X}", i, *byte).ok();
+            }
+            return Some(uid);
+        }
+    
+        ufmt::uwriteln!(serial, "Anti-collision failed; no complete UID.").ok();
+        None
+    }
+    
+     
 
     fn antenna_on<W: uWrite>(&mut self, serial: &mut W) {
         let current = self.read_register(serial, TX_CONTROL_REG);

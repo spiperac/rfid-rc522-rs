@@ -4,7 +4,6 @@
 use arduino_hal::prelude::*;
 use arduino_hal::spi;
 use arduino_hal::default_serial;
-use rfid_rc522::registers;
 use rfid_rc522::RfidRc522;
 use embedded_hal::spi::{Mode, Phase, Polarity};
 use panic_halt as _;
@@ -34,21 +33,29 @@ fn main() -> ! {
     let mut rst = pins.d9.into_output(); // Reset pin
 
     let mut rfid = RfidRc522::new(spi, cs_pin);
-    rfid.init(&mut rst, &mut serial); // Pass serial reference to init
-
-    // rfid.check_version_loop(&mut serial);
+    rfid.init(&mut rst, &mut serial);
 
     loop {
-        match rfid.detect_tag(&mut serial) {
-            Some(uid) => {
-                ufmt::uwriteln!(&mut serial, "Tag detected with UID: ").ok();
-                for byte in &uid {
+        if let Some(uid) = rfid.detect_tag(&mut serial) {
+            ufmt::uwriteln!(&mut serial, "Tag detected with UID:").ok();
+            for byte in &uid {
+                ufmt::uwriteln!(&mut serial, "{:02X} ", *byte).ok();
+            }
+            ufmt::uwriteln!(&mut serial, "").ok();
+
+            // Try to get a more detailed UID using anti-collision
+            ufmt::uwriteln!(&mut serial, "Attempting anti-collision...").ok();
+            if let Some(full_uid) = rfid.anticoll(&mut serial) {
+                ufmt::uwriteln!(&mut serial, "Full UID:").ok();
+                for byte in &full_uid {
                     ufmt::uwriteln!(&mut serial, "{:02X} ", *byte).ok();
                 }
                 ufmt::uwriteln!(&mut serial, "").ok(); // Newline
+            } else {
+                ufmt::uwriteln!(&mut serial, "Anti-collision failed; retrying detection.").ok();
             }
-            None => {
-            }
+        } else {
+            ufmt::uwriteln!(&mut serial, "No tag detected; retrying...").unwrap();
         }
 
         arduino_hal::delay_ms(1000); // Delay between each detection attempt
