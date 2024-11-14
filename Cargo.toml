@@ -18,7 +18,7 @@ version = "0.2.0"
 version = "0.2.0"
 
 [profile.release]
-opt-level = "z"  # Size optimization
+opt-level = "s"  # Size optimization
 panic = "abort"
 
 [profile.dev]

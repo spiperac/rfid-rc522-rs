@@ -4,6 +4,7 @@
 pub mod registers;
 pub mod commands;
 pub mod rfid_rc522;
-pub mod cs_pin_wrapper;
+pub mod card_types;
+pub mod errors;
 
 pub use rfid_rc522::RfidRc522;
