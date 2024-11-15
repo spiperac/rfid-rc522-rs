@@ -45,6 +45,8 @@ fn main() -> ! {
         match rfid.is_new_card_present(&mut serial) {
             Ok(true) => {
                 uwriteln!(&mut serial, "New card detected.").ok();
+                //arduino_hal::delay_ms(2000);
+
             }
             Ok(false) => {
                 uwriteln!(&mut serial, "No card detected; retrying...").unwrap();
@@ -56,8 +58,26 @@ fn main() -> ! {
                 arduino_hal::delay_ms(1000);
                 continue;
             }
+
+            
+        }
+
+        // Step 2: Read the UID of the detected card
+        match rfid.read_card_serial(&mut serial) {
+            Ok(Some(uid)) => {
+                uwriteln!(&mut serial, "Card UID:").ok();
+                for byte in &uid {
+                    uwriteln!(&mut serial, "{:02X}", *byte).ok();
+                }
+            }
+            Ok(None) => {
+                uwriteln!(&mut serial, "Failed to read UID.").ok();
+            }
+            Err(_) => {
+                uwriteln!(&mut serial, "Error reading card UID.").ok();
+            }
         }
         // Delay before the next detection attempt
-        arduino_hal::delay_ms(1000);
+        arduino_hal::delay_ms(1500);
     }
 }

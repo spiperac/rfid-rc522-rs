@@ -9,6 +9,7 @@ pub enum RFIDError {
     Error,         // New Error variant
     CrcError,      // New CrcError variant
     NoRoom,
+    Collision,
 }
 
 impl Debug for RFIDError {
@@ -20,6 +21,7 @@ impl Debug for RFIDError {
             RFIDError::Error => write!(f, "Error"),
             RFIDError::CrcError => write!(f, "CrcError"),
             RFIDError::NoRoom => write!(f, "No room or we"),
+            RFIDError::Collision => write!(f, "Collision i guess"),
             
         }
     }
@@ -38,6 +40,7 @@ impl uDebug for RFIDError {
             RFIDError::Error => f.write_str("Error"),
             RFIDError::CrcError => f.write_str("CrcError"),
             RFIDError::NoRoom => f.write_str("No room or we"),
+            RFIDError::Collision => f.write_str("Collision i guess"),
         }
     }
 }

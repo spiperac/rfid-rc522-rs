@@ -50,3 +50,7 @@ pub const SUCCESS: u8 = 0x0A; // Adjust as needed based on the datasheet (assumi
 pub const ANTICOLL: u8 = 0x93;  // Anti-collision command code for 4-byte UID
 pub const TRANSCEIVE: u8 = 0x0C;
 pub const PICC_CMD_SEL_CL1: u8 = 0x93;
+pub const PICC_CMD_SEL_CL2: u8 = 0x95;
+pub const PICC_CMD_SEL_CL3: u8 = 0x97;
+pub const PICC_CMD_CT: u8 = 0x88; // Cascade Tag
+

@@ -47,114 +47,49 @@ where
         self.write_register(serial, TX_ASK_REG, 0x40); // 100% ASK
         self.write_register(serial, MODE_REG, 0x3D);   // CRC preset to 0x6363
         self.antenna_on(serial); // Enable the antenna
-    }
-    
-    pub fn picc_select<W: ufmt::uWrite>(&mut self, serial: &mut W, uid: &mut [u8; 10], valid_bits: u8) -> Result<(), RFIDError> {
-        let mut cascade_level = 1;
-        let mut uid_complete = false;
-        let mut buffer = [0u8; 9]; // Buffer for SELECT and anti-collision
-        let mut current_level_known_bits = 0;
-        let mut select_done = false;
-    
-        while !uid_complete {
-            // Set the cascade level
-            match cascade_level {
-                1 => {
-                    buffer[0] = 0x93; // PICC_CMD_SEL_CL1
-                    current_level_known_bits = valid_bits;
-                }
-                2 => {
-                    buffer[0] = 0x95; // PICC_CMD_SEL_CL2
-                    current_level_known_bits = valid_bits;
-                }
-                3 => {
-                    buffer[0] = 0x97; // PICC_CMD_SEL_CL3
-                    current_level_known_bits = valid_bits;
-                }
-                _ => return Err(RFIDError::InvalidResponse),
-            }
-    
-            let index = 2;
-            if current_level_known_bits >= 32 {
-                // Full UID is known for this level; send SELECT command with full UID
-                buffer[1] = 0x70; // NVB (Number of Valid Bits)
-                // Send the buffer for SELECT with BCC (Block Check Character)
-                self.write_register(serial, FIFO_DATA_REG, buffer[0]);
-                self.write_register(serial, FIFO_DATA_REG, buffer[1]);
-                self.write_register(serial, FIFO_DATA_REG, buffer[2]);
-                self.write_register(serial, FIFO_DATA_REG, buffer[3]);
-            } else {
-                // Anticollision: Partially known UID, continue requesting more bits
-                buffer[1] = 0x20; // NVB for anti-collision
-                self.write_register(serial, FIFO_DATA_REG, buffer[0]);
-                self.write_register(serial, FIFO_DATA_REG, buffer[1]);
-            }
-    
-            // Step 2: Send the SELECT command and check for response
-            let response = self.read_response(serial)?;
-            if response.is_none() {
-                return Err(RFIDError::Timeout); // Timeout if no response
-            }
-    
-            // Step 3: Check FIFO level for valid data
-            let fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
-            if fifo_level >= 4 {
-                // We have enough data in FIFO, process the UID bytes
-                for i in 0..4 {
-                    uid[i] = self.read_register(serial, FIFO_DATA_REG);
-                }
-    
-                // Verify UID is complete (no collision)
-                let mut crc = [0u8; 2];
-                let result = self.pcd_calculate_crc(&buffer[0..7], &mut crc);
-                if result == RFIDError::CommunicationError {
-                    return Err(RFIDError::CommunicationError);
-                }
-    
-                // Compare CRC
-                if buffer[7] == crc[0] && buffer[8] == crc[1] {
-                    select_done = true;
-                    uid_complete = true;
-                } else {
-                    ufmt::uwriteln!(serial, "CRC check failed for UID").ok();
-                }
-            }
-    
-            // If collision is detected, adjust and retry
-            if select_done {
-                cascade_level += 1;
-            }
-        }
-        Ok(())
+        self.set_antenna_gain_max(serial);
+
     }
 
-    fn pcd_calculate_crc(&mut self, data: &[u8], crc: &mut [u8; 2]) -> RFIDError {
-        // Initial values for CRC calculation
-        let mut crc_reg = 0x6363; // CRC initial value
-        let mut current_byte;
-        let mut current_bit: u8; // Add explicit type for current_bit
+    pub fn pcd_calculate_crc<W: ufmt::uWrite>(
+        &mut self,
+        serial: &mut W,
+        data: &[u8],
+        crc: &mut [u8; 2],
+    ) -> Result<(), RFIDError> {
+        // Reset the CRC calculator and configure it
+        self.write_register(serial, COMMAND_REG, 0x00); // Set to IDLE state
+        self.write_register(serial, DIV_IRQ_REG, 0x04); // Clear CRC interrupt
+        self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Flush FIFO
     
-        // Process each byte in the data
+        // Write data to FIFO for CRC calculation
         for &byte in data {
-            current_byte = byte;
-            // Process each bit in the byte
-            for i in 0..8 {
-                let carry = (crc_reg & 0x8000) != 0; // Check the highest bit of CRC
-                crc_reg <<= 1; // Shift CRC to the left
-    
-                // If there was a carry, XOR with the polynomial 0x1021
-                if carry ^ ((current_byte >> (7 - i)) & 0x01 != 0) {
-                    crc_reg ^= 0x1021; // Polynomial 0x1021
-                }
-            }
+            self.write_register(serial, FIFO_DATA_REG, byte);
         }
     
-        // Store the CRC result
-        crc[0] = (crc_reg >> 8) as u8; // High byte
-        crc[1] = (crc_reg & 0xFF) as u8; // Low byte
+        // Start CRC calculation
+        self.write_register(serial, COMMAND_REG, 0x03); // Command: PCD_CALC_CRC
     
-        // If everything went well, return success
-        RFIDError::CommunicationError
+        // Wait for the CRC calculation to complete
+        let mut timeout = 100;
+        while timeout > 0 {
+            let irq = self.read_register(serial, DIV_IRQ_REG);
+            if irq & 0x04 != 0 {
+                break; // CRC calculation complete
+            }
+            arduino_hal::delay_ms(1);
+            timeout -= 1;
+        }
+    
+        if timeout == 0 {
+            return Err(RFIDError::Timeout); // Return timeout error if CRC calculation doesn't complete
+        }
+    
+        // Retrieve the CRC result from the CRC_RESULT_REG
+        crc[0] = self.read_register(serial, CRC_RESULT_REG_L);
+        crc[1] = self.read_register(serial, CRC_RESULT_REG_H);
+    
+        Ok(())
     }
     
     
@@ -202,7 +137,13 @@ where
         // Clear any pending interrupts and reset FIFO
         self.write_register(serial, COMM_IRQ_REG, 0x7F);
         self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Clear FIFO buffer
-    
+        
+        // Reset baud rates
+        self.write_register(serial, TX_MODE_REG,0x00);
+        self.write_register(serial, RX_MODE_REG, 0x00);  
+        // Reset ModWidthReg
+        self.write_register(serial, MODE_WIDTH_REG, 0x26);
+
         // Send the REQA command to check for a card
         //let reqa_command = 0x26;
         //self.send_command(serial, reqa_command)?;
@@ -275,128 +216,135 @@ where
         Ok(buffer[0] != 0x00 && buffer[1] != 0x00)
     }
 
-    pub fn anticoll<W: ufmt::uWrite>(&mut self, serial: &mut W) -> Result<Option<[u8; 4]>, RFIDError> {
-        // Step 1: Reset any previous FIFO data
-        self.write_register(serial, COMM_IRQ_REG, 0x7F);
-        self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Clear FIFO buffer
-    
-        // Step 2: Send the WUPA (Wake-up) command to the card, which might be required for certain cards
-        let wupa_command = 0x52; // WUPA (Wake Up A) command
-        self.send_command(serial, wupa_command)?;
-    
-        // Step 3: Wait for a response to the WUPA command
-        let response = self.read_response(serial)?;
-        if response.is_none() {
-            ufmt::uwriteln!(serial, "Timeout waiting for WUPA response.").ok();
-            return Ok(None); // Timeout or no response
-        }
-    
-        // Step 4: Send the Anti-collision command (0x93 for Mifare Classic)
-        let anticoll_command = 0x93;
-        self.send_command(serial, anticoll_command)?;
-    
-        // Step 5: Wait for the anti-collision response and check if it was successful
-        let mut timeout = 200; // Increased timeout for anti-collision
-        while timeout > 0 {
-            let irq = self.read_register(serial, COMM_IRQ_REG);
-            if irq & 0x30 != 0 {
-                ufmt::uwriteln!(serial, "Response detected in COMM_IRQ_REG: 0x{:X}", irq).ok();
-                break;
-            }
-            arduino_hal::delay_ms(5); // Small delay for processing
-            timeout -= 1;
-        }
-    
-        if timeout == 0 {
-            ufmt::uwriteln!(serial, "Timeout waiting for anti-collision response.").ok();
-            return Ok(None); // Timeout or no response
-        }
-    
-        // Step 6: Check the FIFO level for valid data
-        let fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
-        ufmt::uwriteln!(serial, "FIFO level after anti-collision: {}", fifo_level).ok();
+    pub fn read_card_serial<W: ufmt::uWrite>(&mut self, serial: &mut W) -> Result<Option<[u8; 10]>, RFIDError> {
+        // Directly attempt card selection, which will handle anti-collision internally
+        let mut uid = [0u8; 10]; // UID buffer
         
-        if fifo_level >= 4 {
-            // Read the UID from FIFO if there are enough bytes
-            let mut uid = [0u8; 4];
-            for (i, byte) in uid.iter_mut().enumerate() {
-                *byte = self.read_register(serial, FIFO_DATA_REG);
-                ufmt::uwriteln!(serial, "UID byte {}: {:02X}", i, *byte).ok();
+        // Call select_card, which is equivalent to the C++ `PICC_Select`
+        if self.select_card(serial, &mut uid, 0).is_ok() {
+            ufmt::uwriteln!(serial, "Card successfully selected. UID:").ok();
+            for &byte in &uid {
+                ufmt::uwriteln!(serial, "{:02X}", byte).ok();
             }
-            return Ok(Some(uid)); // Successfully retrieved UID
+            return Ok(Some(uid));
         } else {
-            ufmt::uwriteln!(serial, "Not enough data in FIFO after anti-collision. FIFO level: {}", fifo_level).ok();
-        }
-    
-        // If FIFO doesn't have enough data, return None
-        ufmt::uwriteln!(serial, "Not enough data in FIFO after anti-collision.").ok();
-        Ok(None)
-    }
-    
-    
-    pub fn read_card_serial<W: ufmt::uWrite>(&mut self, serial: &mut W) -> Result<Option<[u8; 4]>, RFIDError> {
-        // Ensure that a card is present
-        if !self.is_new_card_present(serial)? {
+            ufmt::uwriteln!(serial, "Failed to select card.").ok();
             return Ok(None);
         }
-
-        // Attempt anti-collision to retrieve the UID
-        let uid = self.anticoll(serial)?;
-
-        // If we have a UID, perform card selection
-        if let Some(uid) = uid {
-            if self.select_card(serial, &uid)? {
-                Ok(Some(uid))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
     }
 
-    fn select_card<W: ufmt::uWrite>(&mut self, serial: &mut W, uid: &[u8; 4]) -> Result<bool, RFIDError> {
-        // Clear interrupts
-        self.write_register(serial, COMM_IRQ_REG, 0x7F);
-        self.write_register(serial, FIFO_LEVEL_REG, 0x80); // Clear FIFO buffer
-
-        // Send the Select command and UID
-        self.write_register(serial, FIFO_DATA_REG, 0x93); // Select command for Cascade Level 1
-        self.write_register(serial, FIFO_DATA_REG, 0x70); // NVB - Number of Valid Bits
-
-        // Write UID bytes to FIFO
-        for &byte in uid {
+    pub fn select_card<W: ufmt::uWrite>(
+        &mut self,
+        serial: &mut W,
+        uid: &mut [u8; 10],
+        valid_bits: u8,
+    ) -> Result<u8, RFIDError> {
+        let mut cascade_level = 1;
+        let mut uid_complete = false;
+        let mut current_level_known_bits = valid_bits;
+        let mut tx_last_bits: u8 = 0;
+        let mut sak: u8 = 0;
+        let mut uid_index = 0;
+    
+        while !uid_complete {
+            let (sel_command, uid_start) = match cascade_level {
+                1 => (PICC_CMD_SEL_CL1, 0),
+                2 => (PICC_CMD_SEL_CL2, 3),
+                3 => (PICC_CMD_SEL_CL3, 6),
+                _ => return Err(RFIDError::InvalidResponse),
+            };
+    
+            // Prepare buffer
+            let mut buffer = [0u8; 9];
+            buffer[0] = sel_command;
+            let mut index = 2;
+    
+            // If using Cascade Tag
+            if cascade_level > 1 && uid[uid_start - 1] == PICC_CMD_CT {
+                buffer[index] = PICC_CMD_CT;
+                index += 1;
+            }
+    
+            // Copy UID bytes into buffer
+            let bytes_to_copy = current_level_known_bits / 8 + (current_level_known_bits % 8 != 0) as u8;
+            for i in 0..bytes_to_copy.min(4 - (index as u8)) {
+                buffer[index] = uid[uid_start + i as usize];
+                index += 1;
+            }
+    
+            // Set NVB (Number of Valid Bits)
+            buffer[1] = ((index as u8) << 4) | tx_last_bits;
+    
+            // Transceive and handle response
+            let mut response_buffer = [0u8; 3];
+            let mut response_length = 3; // Ensure this is passed as a mutable reference
+            let result = self.transceive(
+                serial,
+                &buffer[..index as usize + 1],
+                &mut response_buffer,
+                &mut response_length,
+            );
+    
+            if let Err(err) = result {
+                if err == RFIDError::Collision {
+                    let coll_pos = self.read_register(serial, COLL_REG) & 0x1F;
+                    if coll_pos == 0 {
+                        return Err(RFIDError::Collision); // Collision but no valid position
+                    }
+                    current_level_known_bits = coll_pos;
+                } else {
+                    return Err(err);
+                }
+            } else {
+                if current_level_known_bits >= 32 {
+                    // Check SAK
+                    sak = response_buffer[0];
+                    if sak & 0x04 != 0 {
+                        cascade_level += 1;
+                    } else {
+                        uid_complete = true;
+                    }
+                } else {
+                    current_level_known_bits = 32; // Continue anti-collision for full UID
+                }
+            }
+        }
+    
+        Ok(sak)
+    }
+    
+    fn transceive<W: ufmt::uWrite>(
+        &mut self,
+        serial: &mut W,
+        send_buffer: &[u8],
+        receive_buffer: &mut [u8],
+        receive_length: &mut usize,
+    ) -> Result<(), RFIDError> {
+        // Write data to FIFO
+        for &byte in send_buffer {
             self.write_register(serial, FIFO_DATA_REG, byte);
         }
-
-        // Calculate and write BCC (Block Check Character)
-        let bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3];
-        self.write_register(serial, FIFO_DATA_REG, bcc);
-
-        // Set command to TRANSCEIVE
+        // Initiate transceive command
         self.write_register(serial, COMMAND_REG, TRANSCEIVE);
-        self.write_register(serial, BIT_FRAMING_REG, 0x00);
-
-        // Wait for a response
+        // Wait for response or timeout
         let mut timeout = 100;
         while timeout > 0 {
             let irq = self.read_register(serial, COMM_IRQ_REG);
             if irq & 0x30 != 0 {
-                break; // Response received
+                // Process received data
+                let fifo_level = self.read_register(serial, FIFO_LEVEL_REG) as usize;
+                for i in 0..fifo_level.min(receive_buffer.len()) {
+                    receive_buffer[i] = self.read_register(serial, FIFO_DATA_REG);
+                }
+                *receive_length = fifo_level;
+                return Ok(());
             }
             arduino_hal::delay_ms(1);
             timeout -= 1;
         }
-
-        if timeout == 0 {
-            return Ok(false); // Timeout, no selection
-        }
-
-        // Check for successful selection
-        let fifo_level = self.read_register(serial, FIFO_LEVEL_REG);
-        Ok(fifo_level >= 1) // SAK (Select Acknowledge) response expected
+        Err(RFIDError::Timeout)
     }
-
+    
     fn send_command<W: ufmt::uWrite>(&mut self, serial: &mut W, command: u8) -> Result<(), RFIDError> {
         // Write the command to FIFO and set TRANSCEIVE mode
         self.write_register(serial, FIFO_DATA_REG, command);
@@ -428,6 +376,12 @@ where
         if (current & 0x03) != 0x03 {
             self.write_register(serial, TX_CONTROL_REG, current | 0x03);
         }
+    }
+
+    pub fn set_antenna_gain_max<W: ufmt::uWrite>(&mut self, serial: &mut W) {
+        let max_gain = 0x70; // Maximum gain value for the RF_CFG_REG
+        self.write_register(serial, RF_CFG_REG, max_gain);
+        ufmt::uwriteln!(serial, "Antenna gain set to maximum").ok();
     }
 
     fn write_register<W: uWrite>(&mut self, _serial: &mut W, address: u8, value: u8) {
